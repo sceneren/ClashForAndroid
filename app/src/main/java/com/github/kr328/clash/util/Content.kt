@@ -2,6 +2,7 @@ package com.github.kr328.clash.util
 
 import android.content.ContentResolver
 import android.net.Uri
+import com.blankj.utilcode.util.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException

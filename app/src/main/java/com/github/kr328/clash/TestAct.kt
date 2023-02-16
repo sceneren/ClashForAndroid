@@ -2,65 +2,49 @@ package com.github.kr328.clash
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.widget.Button
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import com.blankj.utilcode.util.FileUtils
+import androidx.documentfile.provider.DocumentFile
 import com.blankj.utilcode.util.LogUtils
+import com.blankj.utilcode.util.PathUtils
 import com.github.kr328.clash.common.log.Log
-import com.github.kr328.clash.common.util.intent
-import com.github.kr328.clash.common.util.setUUID
-import com.github.kr328.clash.core.bridge.ClashException
-import com.github.kr328.clash.core.model.TunnelState
-import com.github.kr328.clash.remote.Broadcasts
+import com.github.kr328.clash.core.model.ProxySort
 import com.github.kr328.clash.remote.FilesClient
-import com.github.kr328.clash.remote.Remote
 import com.github.kr328.clash.service.model.Profile
-import com.github.kr328.clash.service.util.generateProfileUUID
 import com.github.kr328.clash.util.*
 import com.hjq.permissions.Permission
 import com.hjq.permissions.XXPermissions
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import java.io.File
 import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.suspendCoroutine
 
 class TestAct : AppCompatActivity(),
-    CoroutineScope by MainScope(),
-    Broadcasts.Observer {
+    CoroutineScope by MainScope() {
 
-    private val events = Channel<BaseActivity.Event>(Channel.UNLIMITED)
+//    private val events = Channel<BaseActivity.Event>(Channel.UNLIMITED)
 
-    private var activityStarted: Boolean = false
-    private val clashRunning: Boolean
-        get() = Remote.broadcasts.clashRunning
+
     private var defer: suspend () -> Unit = {}
     private var deferRunning = false
 
     private val nextRequestKey = AtomicInteger(0)
 
-
-    private val requests: Channel<R> = Channel(Channel.UNLIMITED)
-
-
     private val fileClient = FilesClient(this)
-    private val stack = Stack<String>()
 
 
     private lateinit var btnOpen: Button
     private lateinit var btnClose: Button
     private lateinit var btnChoose: Button
+    private lateinit var btnQuery: Button
 
     @SuppressLint("MissingInflatedId")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,7 +53,7 @@ class TestAct : AppCompatActivity(),
         btnOpen = findViewById(R.id.btn_open)
         btnClose = findViewById(R.id.btn_close)
         btnChoose = findViewById(R.id.btn_choose)
-        fetch()
+        btnQuery = findViewById(R.id.btn_query)
         XXPermissions.with(this)
             .permission(Permission.MANAGE_EXTERNAL_STORAGE)
             .request { _, _ -> }
@@ -78,32 +62,40 @@ class TestAct : AppCompatActivity(),
 
 
         btnOpen.setOnClickListener {
-            LogUtils.e("bbbbbbbbb")
             startClash()
-            LogUtils.e("eeeeeeeee")
         }
 
         btnClose.setOnClickListener {
-            LogUtils.e("cccccccccc")
             stopClashService()
         }
 
         btnChoose.setOnClickListener {
             launch {
 
-                val uri: Uri? = startActivityForResult(
-                    ActivityResultContracts.GetContent(),
-                    "*/*"
-                )
-                if (uri != null) {
-                    contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                    LogUtils.e("====>$uri")
-                    chooseConfig(uri)
+                val path = PathUtils.getExternalDownloadsPath() + "/Weixin/clash.yaml"
+                val documentFile = DocumentFile.fromFile(File(path))
+
+                val uri = documentFile.uri
+                chooseConfig(uri)
+
+            }
+        }
+        btnQuery.setOnClickListener {
+
+            launch {
+                val names = withClash { queryProxyGroupNames(false) }
+                names.forEach {
+                    val proxy = withClash { queryProxyGroup(it, ProxySort.Default) }
+                    proxy.proxies.forEach {
+                        LogUtils.e(it.name)
+                    }
+
                 }
 
+//                withClash {
+//                    val result = queryProxyGroupNames(false)
+//                    LogUtils.e("queryProviders=============>$result")
+//                }
             }
         }
 
@@ -153,13 +145,9 @@ class TestAct : AppCompatActivity(),
 
 
     private fun startClash() {
-        LogUtils.e("0000")
         launch {
-            LogUtils.e("1111")
             val active = withProfile { queryActive() }
-            LogUtils.e(active)
             if (active == null || !active.imported) {
-                LogUtils.e("3333")
                 return@launch
             }
 
@@ -182,38 +170,8 @@ class TestAct : AppCompatActivity(),
         }
     }
 
-    override fun onProfileChanged() {
-        events.trySend(BaseActivity.Event.ProfileChanged)
-    }
 
-    override fun onProfileLoaded() {
-        events.trySend(BaseActivity.Event.ProfileLoaded)
-    }
-
-    override fun onServiceRecreated() {
-        events.trySend(BaseActivity.Event.ServiceRecreated)
-    }
-
-    override fun onStarted() {
-        events.trySend(BaseActivity.Event.ClashStart)
-    }
-
-    override fun onStopped(cause: String?) {
-        events.trySend(BaseActivity.Event.ClashStop)
-
-        if (cause != null && activityStarted) {
-            launch {
-                Log.e(ClashException(cause).message ?: "异常")
-            }
-        }
-    }
-
-    fun defer(operation: suspend () -> Unit) {
-        this.defer = operation
-    }
-
-
-    suspend fun <I, O> startActivityForResult(
+    private suspend fun <I, O> startActivityForResult(
         contracts: ActivityResultContract<I, O>,
         input: I
     ): O = withContext(Dispatchers.Main) {
@@ -228,32 +186,8 @@ class TestAct : AppCompatActivity(),
         }
     }
 
-
-    override fun onStart() {
-        super.onStart()
-
-        activityStarted = true
-
-        Remote.broadcasts.addObserver(this)
-
-        events.trySend(BaseActivity.Event.ActivityStart)
-    }
-
-    override fun onStop() {
-        super.onStop()
-
-        activityStarted = false
-
-        Remote.broadcasts.removeObserver(this)
-
-        events.trySend(BaseActivity.Event.ActivityStop)
-    }
-
     override fun onDestroy() {
-//        design?.cancel()
-
         cancel()
-
         super.onDestroy()
     }
 
@@ -273,77 +207,6 @@ class TestAct : AppCompatActivity(),
                 }
             }
         }
-    }
-
-    private fun fetch() {
-        lifecycleScope.launch {
-            setClashRunning(clashRunning)
-
-            val state = withClash {
-                queryTunnelState()
-            }
-            val providers = withClash {
-                queryProviders()
-            }
-
-            setMode(state.mode)
-            setHasProviders(providers.isNotEmpty())
-
-            withProfile {
-                setProfileName(queryActive()?.name)
-            }
-        }
-
-    }
-
-
-    suspend fun setProfileName(name: String?) {
-        withContext(Dispatchers.Main) {
-        }
-    }
-
-    suspend fun setClashRunning(running: Boolean) {
-        withContext(Dispatchers.Main) {
-        }
-    }
-
-    suspend fun setForwarded(value: Long) {
-        withContext(Dispatchers.Main) {
-        }
-    }
-
-    suspend fun setMode(mode: TunnelState.Mode) {
-        withContext(Dispatchers.Main) {
-
-        }
-    }
-
-    suspend fun setHasProviders(has: Boolean) {
-        withContext(Dispatchers.Main) {
-        }
-    }
-
-    @SuppressLint("Range")
-    private fun getFileContentUri(file: File): Uri? {
-        val volumeName = FileUtils.getFileNameNoExtension(file)
-        val filePath = file.absolutePath
-        LogUtils.e("xxxxxxxxxxxxxxxx===>$filePath")
-        val projection = arrayOf(MediaStore.Files.FileColumns._ID)
-        var uri: Uri? = null
-
-        val cursor = contentResolver.query(
-            MediaStore.Files.getContentUri(volumeName), projection,
-            MediaStore.Images.Media.DATA + "=? ", arrayOf(filePath), null
-        )
-        if (cursor != null) {
-            if (cursor.moveToFirst()) {
-                val id = cursor.getLong(cursor.getColumnIndex(MediaStore.Files.FileColumns._ID))
-                uri = MediaStore.Files.getContentUri(volumeName, id)
-            }
-            cursor.close()
-        }
-        LogUtils.e("++++++++++>$uri")
-        return uri
     }
 
 }

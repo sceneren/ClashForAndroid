@@ -44,7 +44,7 @@
             android:value="@integer/release_code" />
 
         <activity
-            android:name=".MainActivity"
+            android:name=".TestAct"
             android:configChanges="uiMode"
             android:exported="true"
             android:label="@string/launch_name"
